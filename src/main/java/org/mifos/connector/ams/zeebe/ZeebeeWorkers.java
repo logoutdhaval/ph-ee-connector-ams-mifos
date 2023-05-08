@@ -1,14 +1,53 @@
 package org.mifos.connector.ams.zeebe;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import io.camunda.zeebe.client.ZeebeClient;
-import io.camunda.zeebe.client.api.response.ActivatedJob;
+import static org.mifos.connector.ams.camel.config.CamelProperties.QUOTE_AMOUNT_TYPE;
+import static org.mifos.connector.ams.camel.config.CamelProperties.TRANSACTION_ROLE;
+import static org.mifos.connector.ams.camel.config.CamelProperties.TRANSFER_ACTION;
+import static org.mifos.connector.ams.camel.config.CamelProperties.ZEEBE_JOB_KEY;
+import static org.mifos.connector.ams.zeebe.ZeebeUtil.zeebeVariable;
+import static org.mifos.connector.ams.zeebe.ZeebeUtil.zeebeVariablesToCamelProperties;
+import static org.mifos.connector.ams.zeebe.ZeebeVariables.ACCOUNT;
+import static org.mifos.connector.ams.zeebe.ZeebeVariables.ACCOUNT_CURRENCY;
+import static org.mifos.connector.ams.zeebe.ZeebeVariables.BOOK_TRANSACTION_ID;
+import static org.mifos.connector.ams.zeebe.ZeebeVariables.CHANNEL_REQUEST;
+import static org.mifos.connector.ams.zeebe.ZeebeVariables.EXTERNAL_ACCOUNT_ID;
+import static org.mifos.connector.ams.zeebe.ZeebeVariables.LOCAL_QUOTE_FAILED;
+import static org.mifos.connector.ams.zeebe.ZeebeVariables.LOCAL_QUOTE_RESPONSE;
+import static org.mifos.connector.ams.zeebe.ZeebeVariables.PARTY_ID;
+import static org.mifos.connector.ams.zeebe.ZeebeVariables.PARTY_ID_TYPE;
+import static org.mifos.connector.ams.zeebe.ZeebeVariables.PAYEE_PARTY_RESPONSE;
+import static org.mifos.connector.ams.zeebe.ZeebeVariables.QUOTE_FAILED;
+import static org.mifos.connector.ams.zeebe.ZeebeVariables.QUOTE_SWITCH_REQUEST;
+import static org.mifos.connector.ams.zeebe.ZeebeVariables.TENANT_ID;
+import static org.mifos.connector.ams.zeebe.ZeebeVariables.TRANSACTION_ID;
+import static org.mifos.connector.ams.zeebe.ZeebeVariables.TRANSFER_CODE;
+import static org.mifos.connector.ams.zeebe.ZeebeVariables.TRANSFER_PREPARE_FAILED;
+import static org.mifos.connector.common.ams.dto.TransferActionType.CREATE;
+import static org.mifos.connector.common.ams.dto.TransferActionType.PREPARE;
+import static org.mifos.connector.common.ams.dto.TransferActionType.RELEASE;
+
+import java.math.BigDecimal;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+import javax.annotation.PostConstruct;
+
 import org.apache.camel.CamelContext;
 import org.apache.camel.Exchange;
 import org.apache.camel.ProducerTemplate;
 import org.apache.camel.support.DefaultExchange;
 import org.json.JSONObject;
 import org.mifos.connector.ams.properties.TenantProperties;
+import org.mifos.connector.ams.zeebe.workers.accountdetails.AmsCreditorWorker;
+import org.mifos.connector.ams.zeebe.workers.accountdetails.AmsDebtorWorker;
+import org.mifos.connector.ams.zeebe.workers.bookamount.BookCreditedAmountToConversionAccountWorker;
+import org.mifos.connector.ams.zeebe.workers.bookamount.BookOnConversionAccountInAmsWorker;
+import org.mifos.connector.ams.zeebe.workers.bookamount.OnUsTransferWorker;
+import org.mifos.connector.ams.zeebe.workers.bookamount.RevertInAmsWorker;
+import org.mifos.connector.ams.zeebe.workers.bookamount.TransferNonTransactionalFeeInAmsWorker;
+import org.mifos.connector.ams.zeebe.workers.bookamount.TransferToConversionAccountInAmsWorker;
+import org.mifos.connector.ams.zeebe.workers.bookamount.TransferToDisposalAccountWorker;
 import org.mifos.connector.common.ams.dto.QuoteFspResponseDTO;
 import org.mifos.connector.common.channel.dto.TransactionChannelRequestDTO;
 import org.mifos.connector.common.gsma.dto.GsmaTransfer;
@@ -28,42 +67,14 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
-
-import javax.annotation.PostConstruct;
-import java.math.BigDecimal;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
-
 import static org.mifos.connector.ams.camel.config.CamelProperties.*;
-import static org.mifos.connector.ams.zeebe.ZeebeUtil.zeebeVariable;
-import static org.mifos.connector.ams.zeebe.ZeebeUtil.zeebeVariablesToCamelProperties;
-import static org.mifos.connector.ams.zeebe.ZeebeVariables.ACCOUNT;
-import static org.mifos.connector.ams.zeebe.ZeebeVariables.ACCOUNT_CURRENCY;
+import io.camunda.zeebe.client.api.response.ActivatedJob;
 import static org.mifos.connector.ams.zeebe.ZeebeVariables.ACCOUNT_IDENTIFIER;
 import static org.mifos.connector.ams.zeebe.ZeebeVariables.ACCOUNT_NUMBER;
-import static org.mifos.connector.ams.zeebe.ZeebeVariables.BOOK_TRANSACTION_ID;
-import static org.mifos.connector.ams.zeebe.ZeebeVariables.CHANNEL_REQUEST;
-import static org.mifos.connector.ams.zeebe.ZeebeVariables.EXTERNAL_ACCOUNT_ID;
 import static org.mifos.connector.ams.zeebe.ZeebeVariables.INTEROP_REGISTRATION_FAILED;
-import static org.mifos.connector.ams.zeebe.ZeebeVariables.LOCAL_QUOTE_FAILED;
-import static org.mifos.connector.ams.zeebe.ZeebeVariables.LOCAL_QUOTE_RESPONSE;
-import static org.mifos.connector.ams.zeebe.ZeebeVariables.PARTY_ID;
-import static org.mifos.connector.ams.zeebe.ZeebeVariables.PARTY_ID_TYPE;
-import static org.mifos.connector.ams.zeebe.ZeebeVariables.PAYEE_PARTY_RESPONSE;
-import static org.mifos.connector.ams.zeebe.ZeebeVariables.QUOTE_FAILED;
-import static org.mifos.connector.ams.zeebe.ZeebeVariables.QUOTE_SWITCH_REQUEST;
-import static org.mifos.connector.ams.zeebe.ZeebeVariables.QUOTE_SWITCH_REQUEST_AMOUNT;
-import static org.mifos.connector.ams.zeebe.ZeebeVariables.REQUESTED_DATE;
-import static org.mifos.connector.ams.zeebe.ZeebeVariables.TENANT_ID;
-import static org.mifos.connector.ams.zeebe.ZeebeVariables.TRANSACTION_ID;
-import static org.mifos.connector.ams.zeebe.ZeebeVariables.TRANSFER_CODE;
-import static org.mifos.connector.ams.zeebe.ZeebeVariables.TRANSFER_PREPARE_FAILED;
 import static org.mifos.connector.ams.zeebe.ZeebeVariables.NOTE;
-import static org.mifos.connector.common.ams.dto.TransferActionType.CREATE;
-import static org.mifos.connector.common.ams.dto.TransferActionType.PREPARE;
-import static org.mifos.connector.common.ams.dto.TransferActionType.RELEASE;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.camunda.zeebe.client.ZeebeClient;
 
 @Component
 public class ZeebeeWorkers {
@@ -97,6 +108,33 @@ public class ZeebeeWorkers {
     @Autowired
     private TenantProperties tenantProperties;
 
+    @Autowired
+    private AmsCreditorWorker amsCreditorWorker;
+    
+    @Autowired
+    private BookCreditedAmountToConversionAccountWorker bookCreditedAmountToConversionAccountWorker;
+    
+    @Autowired
+    private TransferToDisposalAccountWorker transferToDisposalAccountWorker;
+    
+    @Autowired
+    private AmsDebtorWorker amsDebtorWorker;
+    
+    @Autowired
+    private TransferToConversionAccountInAmsWorker transferToConversionAccountInAmsWorker;
+    
+    @Autowired
+    private BookOnConversionAccountInAmsWorker bookOnConversionAccountInAmsWorker;
+    
+    @Autowired
+    private RevertInAmsWorker revertInAmsWorker;
+    
+    @Autowired
+    private OnUsTransferWorker onUsTransferWorker;
+    
+    @Autowired
+    private TransferNonTransactionalFeeInAmsWorker transferNonTransactionalFeeInAmsWorker;
+    
     @Value("${ams.local.enabled:false}")
     private boolean isAmsLocalEnabled;
 
@@ -218,7 +256,91 @@ public class ZeebeeWorkers {
                     .name("release-block")
                     .maxJobsActive(workerMaxJobs)
                     .open();
-
+            
+            zeebeClient.newWorker()
+            		.jobType("getAccountDetailsFromAms")
+            		.handler(amsCreditorWorker)
+            		.name("GetAccountDetailsFromAms")
+            		.maxJobsActive(workerMaxJobs)
+            		.open();
+            
+            zeebeClient.newWorker()
+            		.jobType("bookCreditedAmountToConversionAccount")
+            		.handler(bookCreditedAmountToConversionAccountWorker)
+            		.name("BookCreditedAmountToConversionAccount")
+            		.maxJobsActive(workerMaxJobs)
+            		.open();
+            
+            zeebeClient.newWorker()
+    		.jobType("transferToDisposalAccount")
+    		.handler(transferToDisposalAccountWorker)
+    		.name("TransferToDisposalAccount")
+    		.maxJobsActive(workerMaxJobs)
+    		.open();
+            
+            zeebeClient.newWorker()
+    		.jobType("getAccountIdsFromAms")
+    		.handler(amsDebtorWorker)
+    		.name("GetAccountIdsFromAms")
+    		.maxJobsActive(workerMaxJobs)
+    		.open();
+            
+            zeebeClient.newWorker()
+    		.jobType("transferToConversionAccountInAms")
+    		.handler(transferToConversionAccountInAmsWorker)
+    		.name("TransferToConversionAccountInAms")
+    		.maxJobsActive(workerMaxJobs)
+    		.open();
+            
+            
+            zeebeClient.newWorker()
+    		.jobType("bookOnConversionAccountInAms")
+    		.handler(bookOnConversionAccountInAmsWorker)
+    		.name("BookOnConversionAccountInAms")
+    		.maxJobsActive(workerMaxJobs)
+    		.open();
+            
+            
+            
+            zeebeClient.newWorker()
+    		.jobType("revertInAms")
+    		.handler(revertInAmsWorker)
+    		.name("RevertInAms")
+    		.maxJobsActive(workerMaxJobs)
+    		.open();
+            
+            
+            // OnUs
+            zeebeClient.newWorker()
+            .jobType("getAccountIdsFromAms")
+    		.handler(amsDebtorWorker)
+    		.name("GetDebtorAccountIdsFromAms")
+    		.maxJobsActive(workerMaxJobs)
+    		.open();
+            
+            zeebeClient.newWorker()
+            .jobType("getAccountDetailsFromAms")
+    		.handler(amsCreditorWorker)
+    		.name("GetCreditorAccountIdFromAms")
+    		.maxJobsActive(workerMaxJobs)
+    		.open();
+            
+            zeebeClient.newWorker()
+            .jobType("transferTheAmountBetweenDisposalAccounts")
+    		.handler(onUsTransferWorker)
+    		.name("TransferTheAmountBetweenDisposalAccounts")
+    		.maxJobsActive(workerMaxJobs)
+    		.open();
+            
+            zeebeClient.newWorker()
+            .jobType("transferNonTransactionalFeeInAms")
+            .handler(transferNonTransactionalFeeInAmsWorker)
+            .name("TransferNonTransactionalFeeInAms")
+            .maxJobsActive(workerMaxJobs)
+            .open();
+            
+            
+            
             for (String dfspid : dfspids) {
                 logger.info("DFSPID {}", dfspid);
                 logger.info("## generating " + WORKER_PAYER_LOCAL_QUOTE + "{} worker", dfspid);
