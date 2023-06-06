@@ -562,6 +562,7 @@ public class ZeebeeWorkers {
                         .handler((client, job) -> {
                             logWorkerDetails(job);
                             Map<String, Object> existingVariables = job.getVariablesAsMap();
+                            logger.info("______________________WORKER_ACCOUNT_IDENTIFIER______________________");
                             logger.debug("Exisiting variables {}", existingVariables);
                             String accountHoldingInstitutionId = (String) existingVariables.get(TENANT_ID);
                             if (isAmsLocalEnabled) {
@@ -572,8 +573,8 @@ public class ZeebeeWorkers {
                                 String accountNo = gsmaTransfer.getPayee().get(0).getPartyIdIdentifier();
                                 Exchange e = zeebeUtil.setAccountTypeAndNumber(ex, accountNo);
                                 String transactionChannelRequestDTO = ZeebeUtil.convertGsmaTransfertoTransactionChannel(gsmaTransfer,e.getProperty(ACCOUNT_NUMBER));
-                                logger.debug("Transaction Channel Request DTO:{}",transactionChannelRequestDTO);
-                                logger.debug("Account Identifier:{}",ACCOUNT_IDENTIFIER);
+                                logger.info("Transaction Channel Request DTO:{}",transactionChannelRequestDTO);
+                                logger.info("Account Identifier:{}",ACCOUNT_IDENTIFIER);
 
                                 ZeebeUtil.setZeebeVariables(e,variables,gsmaTransfer.getRequestDate(),accountHoldingInstitutionId,transactionChannelRequestDTO);
 
